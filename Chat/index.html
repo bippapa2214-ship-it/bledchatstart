@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BledChat • Live</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        /* [PASTE ALL YOUR EXISTING NEON CSS HERE] */
+        /* Keep all your beautiful neon styles from before */
+        :root {
+            --neon-blue: #00f3ff;
+            --neon-blue-glow: #00f3ff;
+            --neon-dark: #00a8ff;
+            --neon-light: #80ebff;
+            --neon-bg: #0a0a1a;
+            --neon-surface: #11112a;
+            /* ... rest of your CSS variables */
+        }
+        /* ... rest of your CSS */
+    </style>
+</head>
+<body>
+    <!-- [PASTE ALL YOUR EXISTING HTML STRUCTURE HERE] -->
+    <!-- Keep all your beautiful HTML from before -->
+
+    <script>
+        // UPDATED JAVASCRIPT FOR VERCEl
+        let currentUser = '';
+        let currentUserCode = '';
+        let currentRoom = 'general';
+        let eventSource = null;
+        let sessionId = '';
+
+        // API base URL - will be same domain when deployed
+        const API_BASE = window.location.origin + '/api';
+
+        async function apiCall(endpoint, data) {
+            try {
+                const response = await fetch(`${API_BASE}/${endpoint}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(data)
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                return await response.json();
+            } catch (error) {
+                console.error('API call failed:', error);
+                throw error;
+            }
+        }
+
+        // Modified handleLogin function
+        async function handleLogin() {
+            const username = document.getElementById('username').value.trim();
+            const password = document.getElementById('password').value;
+            
+            if (!username || !password) {
+                showError('Please enter both username and password');
+                return;
+            }
+
+            try {
+                const result = await apiCall('auth', {
+                    action: 'login',
+                    username,
+                    password
+                });
+
+                if (result.success) {
+                    currentUser = result.username;
+                    currentUserCode = result.userCode;
+                    sessionId = result.sessionId;
+                    
+                    // Store session
+                    localStorage.setItem('bledchat_session', sessionId);
+                    localStorage.setItem('bledchat_user', currentUser);
+                    
+                    handleLoginSuccess(result);
+                } else {
+                    showError(result.error);
+                }
+            } catch (error) {
+                showError('Login failed: ' + error.message);
+            }
+        }
+
+        // Modified handleSignup function
+        async function handleSignup() {
+            const username = document.getElementById('signupUsername').value.trim();
+            const password = document.getElementById('signupPassword').value;
+            const confirmPassword = document.getElementById('confirmPassword').value;
+            
+            // Validation
+            if (!username || username.length < 3) {
+                showError('Username must be at least 3 characters');
+                return;
+            }
+            if (!password || password.length < 6) {
+                showError('Password must be at least 6 characters');
+                return;
+            }
+            if (password !== confirmPassword) {
+                showError('Passwords do not match');
+                return;
+            }
+
+            try {
+                const result = await apiCall('auth', {
+                    action: 'signup',
+                    username,
+                    password
+                });
+
+                if (result.success) {
+                    showSuccess('Account created! Your code: ' + result.userCode);
+                    switchTab('login');
+                    document.getElementById('username').value = username;
+                } else {
+                    showError(result.error);
+                }
+            } catch (error) {
+                showError('Signup failed: ' + error.message);
+            }
+        }
+
+        // Modified sendMessage function
+        async function sendMessage() {
+            const messageInput = document.getElementById('messageInput');
+            const text = messageInput.value.trim();
+            
+            if (!text || !currentUser) return;
+
+            try {
+                await apiCall('messages', {
+                    action: 'send_message',
+                    room: currentRoom,
+                    message: text,
+                    username: currentUser
+                });
+                
+                messageInput.value = '';
+                messageInput.style.height = 'auto';
+            } catch (error) {
+                showError('Failed to send message');
+            }
+        }
+
+        // Real-time subscription
+        function subscribeToRoom(room) {
+            // Close existing connection
+            if (eventSource) {
+                eventSource.close();
+            }
+
+            // Subscribe to new room
+            eventSource = new EventSource(`${API_BASE}/subscribe?room=${room}`);
+            
+            eventSource.onmessage = function(event) {
+                try {
+                    const data = JSON.parse(event.data);
+                    handleServerMessage(data);
+                } catch (error) {
+                    console.error('SSE parse error:', error);
+                }
+            };
+            
+            eventSource.onerror = function(error) {
+                console.error('SSE error:', error);
+                // Attempt to reconnect after delay
+                setTimeout(() => subscribeToRoom(room), 3000);
+            };
+        }
+
+        // Load message history
+        async function loadMessageHistory(room) {
+            try {
+                const result = await apiCall('messages', {
+                    action: 'get_messages',
+                    room: room
+                });
+                
+                if (result.success && result.messages) {
+                    result.messages.forEach(msg => displayMessage(msg));
+                }
+            } catch (error) {
+                console.error('Failed to load message history:', error);
+            }
+        }
+
+        // Modified room functions
+        async function createPrivateRoom() {
+            try {
+                const result = await apiCall('messages', {
+                    action: 'create_room',
+                    username: currentUser
+                });
+                
+                if (result.success) {
+                    showSuccess('Private room created! Code: ' + result.roomCode);
+                    joinRoom(result.roomCode);
+                }
+            } catch (error) {
+                showError('Failed to create room');
+            }
+        }
+
+        async function joinRoom(roomCode) {
+            if (!roomCode) {
+                roomCode = document.getElementById('joinRoomCode').value.trim().toUpperCase();
+            }
+            
+            if (!roomCode) {
+                showError('Please enter a room code');
+                return;
+            }
+
+            try {
+                const result = await apiCall('messages', {
+                    action: 'join_room',
+                    roomCode: roomCode,
+                    username: currentUser
+                });
+                
+                if (result.success) {
+                    // Leave current room
+                    if (eventSource) {
+                        eventSource.close();
+                    }
+                    
+                    // Join new room
+                    currentRoom = roomCode;
+                    document.getElementById('currentRoom').textContent = currentRoom;
+                    subscribeToRoom(currentRoom);
+                    loadMessageHistory(currentRoom);
+                    
+                    addSystemMessage(`Joined room: ${currentRoom}`);
+                } else {
+                    showError(result.error);
+                }
+            } catch (error) {
+                showError('Failed to join room');
+            }
+        }
+
+        // Keep all your existing display functions, they should work the same
+        function displayMessage(message) {
+            // [KEEP YOUR EXISTING displayMessage FUNCTION]
+        }
+
+        function handleServerMessage(data) {
+            // [KEEP YOUR EXISTING handleServerMessage FUNCTION]
+        }
+
+        // Initialize app
+        document.addEventListener('DOMContentLoaded', function() {
+            // Check for existing session
+            const savedSession = localStorage.getItem('bledchat_session');
+            const savedUser = localStorage.getItem('bledchat_user');
+            
+            if (savedSession && savedUser) {
+                // Auto-login with saved session
+                currentUser = savedUser;
+                sessionId = savedSession;
+                // Validate session and proceed to chat
+            }
+            
+            // Rest of your initialization code
+        });
+
+        // Keep all your other existing functions
+        // They should work with minimal changes
+
+    </script>
+</body>
+</html>
